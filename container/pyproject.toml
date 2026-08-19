@@ -1,0 +1,12 @@
+[project]
+name = "rire-recorder"
+version = "0.1.0"
+description = "radiko timeshift recorder for Cloudflare Containers"
+requires-python = ">=3.12"
+dependencies = [
+    "yt-dlp>=2025.02.19",
+    "yt-dlp-rajiko==1.13",
+]
+
+[tool.uv]
+package = false

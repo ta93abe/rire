@@ -22,7 +22,7 @@ Workflow schedules（毎時 5 分 UTC）
 | パス | 役割 |
 | --- | --- |
 | `src/` | Worker / Workflow / Container Durable Object |
-| `container/` | Python HTTP ジョブ API（yt-dlp / ffmpeg） |
+| `container/` | Python HTTP ジョブ API（yt-dlp / ffmpeg）。依存は uv |
 | `migrations/0001_init.sql` | D1 スキーマ |
 | `scripts/poc-local.sh` | 手元の `yt-dlp --simulate` |
 
@@ -37,12 +37,14 @@ radio/{station_id}/{program_id}/{yyyy}/{mm}/{yyyy-mm-ddTHHmmss}+09:00.json
 
 ```bash
 npm install
+uv --directory container sync --frozen --no-dev
 npm test
-chmod +x scripts/poc-local.sh
 ./scripts/poc-local.sh 'https://radiko.jp/#!/ts/FMT/20251012140000'
 npx wrangler d1 migrations apply rire --local
 npx wrangler dev
 ```
+
+Python 依存は `container/pyproject.toml` と `container/uv.lock` です。手元もコンテナも **uv** を使います。uv の導入は [公式のインストール手順](https://docs.astral.sh/uv/getting-started/installation/) を見てください。
 
 `wrangler dev` は Docker が必要です（Containers）。コンテナ単体は次でも確認できます。
 

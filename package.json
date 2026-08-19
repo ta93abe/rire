@@ -7,9 +7,9 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "types": "wrangler types",
-    "test": "vitest run && python3 -m unittest discover -s container -p 'test_*.py'",
+    "test": "vitest run && uv --directory container run --frozen --no-dev python -m unittest discover -s . -p 'test_*.py'",
     "test:unit": "vitest run",
-    "test:py": "python3 -m unittest discover -s container -p 'test_*.py'",
+    "test:py": "uv --directory container run --frozen --no-dev python -m unittest discover -s . -p 'test_*.py'",
     "db:local": "wrangler d1 migrations apply rire --local"
   },
   "devDependencies": {
