@@ -1,0 +1,24 @@
+{
+  "name": "rire",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "types": "wrangler types",
+    "test": "vitest run && python3 -m unittest discover -s container -p 'test_*.py'",
+    "test:unit": "vitest run",
+    "test:py": "python3 -m unittest discover -s container -p 'test_*.py'",
+    "db:local": "wrangler d1 migrations apply rire --local"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20260819.1",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4",
+    "wrangler": "^4.124.0"
+  },
+  "dependencies": {
+    "@cloudflare/containers": "^0.0.30"
+  }
+}

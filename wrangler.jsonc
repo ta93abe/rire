@@ -1,0 +1,63 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "rire",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-19",
+  "observability": {
+    "enabled": true,
+  },
+  // コンテナ I/O 待ちは CPU に入らないが、D1 / R2 / JSON 処理用に余裕を見る
+  "limits": {
+    "cpu_ms": 300000,
+  },
+  "containers": [
+    {
+      "class_name": "RecorderContainer",
+      "image": "./container/Dockerfile",
+      "instance_type": "basic",
+      "max_instances": 1,
+    },
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "RECORDER",
+        "class_name": "RecorderContainer",
+      },
+    ],
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["RecorderContainer"],
+    },
+  ],
+  "workflows": [
+    {
+      "name": "recording-scheduler",
+      "binding": "RECORDING_SCHEDULER",
+      "class_name": "RecordingSchedulerWorkflow",
+      "schedules": ["5 * * * *"],
+    },
+    {
+      "name": "recording-job",
+      "binding": "RECORDING_JOB",
+      "class_name": "RecordingJobWorkflow",
+    },
+  ],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "rire",
+      // リモート用。`npx wrangler d1 create rire` の ID に差し替える
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations",
+    },
+  ],
+  "r2_buckets": [
+    {
+      "binding": "BUCKET",
+      "bucket_name": "rire-recordings",
+    },
+  ],
+}

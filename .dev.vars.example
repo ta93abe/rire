@@ -1,0 +1,7 @@
+# コピーして .dev.vars にする（git 対象外）
+# Timefree30 を使うときだけ埋める。7 日無料タイムフリーなら空でよい。
+RADIKO_EMAIL=
+RADIKO_PASSWORD=
+
+# 設定すると Worker の変更系 API に Bearer が必要になる
+RIRE_API_TOKEN=
