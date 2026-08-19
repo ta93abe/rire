@@ -1,0 +1,619 @@
+# 目的
+
+Cloudflare環境上で、radikoの特定番組を定期的に自動取得し、音声ファイルとしてR2へ保存する仕組みを作りたい。
+
+Macなどの常時起動端末には依存せず、Cloudflareだけで完結する構成を第一候補とする。
+
+リアルタイムで1時間録音し続ける方式よりも、**放送終了後にradikoのタイムフリー配信を高速取得する方式**を優先して検討してほしい。
+
+# 現時点で考えている構成
+
+```text
+Cloudflare Cron Trigger
+        ↓
+Cloudflare Workflow
+        ↓
+Cloudflare Container
+        ↓
+yt-dlp + radiko対応プラグイン
+        ↓
+ffmpeg / remux
+        ↓
+Cloudflare R2
+```
+
+必要に応じて以下も使ってよい。
+
+```text
+D1
+- programs
+- recording_schedules
+- recordings
+```
+
+将来的にはWorkersで管理画面を作り、
+
+- 番組登録
+- 定期録音予約
+- 録音履歴
+- R2上の音声再生
+- メタデータ管理
+
+までできるようにしたい。
+
+# 調査済みの内容
+
+radikoはHLS形式のストリームを使用している。
+
+タイムフリー配信であれば、放送済みのHLSセグメントを実時間再生せず高速に取得できる可能性が高い。
+
+「ネットラジオ録音 X2.5」も、1時間番組を数分程度で取得できる高速録音機能を提供しており、HLSのセグメントを高速取得・連結している可能性が高い。
+
+2026年1月頃にradikoのタイムフリー配信仕様が変更され、旧来の
+
+```text
+https://radiko.jp/v2/api/ts/playlist.m3u8
+```
+
+ではなく、`smartstream.ne.jp`配下の新しいHLS URLが使われるようになっている。
+
+そのURLには例として、
+
+```text
+station_id
+start_at
+ft
+end_at
+to
+lsid
+type
+```
+
+などのパラメータがある。
+
+ただし、認証Token、`lsid`、地域判定などについてはradiko側の仕様変更が頻繁にあるため、自前実装はできるだけ避けたい。
+
+# yt-dlpについて
+
+可能であれば、radikoの内部認証やm3u8 URL生成を自前実装せず、`yt-dlp`系の既存実装を利用したい。
+
+候補として以下を確認している。
+
+```text
+yt-dlp
+yt-dlp-rajiko
+ffmpeg
+```
+
+`yt-dlp-rajiko`など、現在も動作しているradiko向けyt-dlpプラグインがあるかを必ず最新情報で確認すること。
+
+古いREADMEやIssueだけを根拠にせず、**2026年8月現在の実装・リリース状況・radiko仕様への追従状況**を確認してほしい。
+
+# 最初にやってほしいこと
+
+まずコードを書く前に、以下を調査してほしい。
+
+1. 2026年8月時点で、yt-dlp単体またはプラグインを使ってradikoのタイムフリー番組を取得できるか
+2. 現在メンテナンスされているradiko向けyt-dlpプラグインは何か
+3. radiko無料会員・radikoプレミアム・エリアフリーで挙動がどう違うか
+4. Cookieやログイン情報をyt-dlpに渡す必要があるか
+5. タイムフリー30など現在のradikoプランでも利用できるか
+6. 1時間番組を実時間より高速に取得できるか
+7. ffmpegが必要か
+8. Cloudflare Containerで問題なく実行できるか
+9. Cloudflareのegress IPによるradiko地域判定が問題になるか
+10. Cloudflareだけで解決できない場合、何がボトルネックになるか
+
+必ずGitHubの最新Issue・Release・READMEや公式ドキュメントを確認すること。
+
+# PoC
+
+調査結果として実現可能性が高ければ、最小のPoCを作ってほしい。
+
+最初はCloudflare Workflowなどを入れず、Container内部で以下ができればよい。
+
+```text
+radikoのタイムフリーURL
+        ↓
+yt-dlp
+        ↓
+音声取得
+        ↓
+/tmp/output.m4a
+```
+
+例えばCLIイメージは以下。
+
+```bash
+yt-dlp \
+  "<RADIKO_TIMESHIFT_URL>" \
+  -o "/tmp/output.%(ext)s"
+```
+
+必要なら、
+
+```bash
+--cookies
+--cookies-from-browser
+--username
+--password
+```
+
+などを使う。
+
+ただし、実際に必要なオプションは現在のradiko・yt-dlp実装を確認して決めること。
+
+# Cloudflare Container
+
+PoCが成功したら、Cloudflare Containers用のDockerfileを作る。
+
+イメージとしては、
+
+```dockerfile
+FROM python:3.13-slim
+
+RUN apt-get update \
+    && apt-get install -y ffmpeg \
+    && pip install --no-cache-dir \
+       yt-dlp \
+       yt-dlp-rajiko
+
+WORKDIR /app
+
+COPY . .
+
+CMD ["python", "main.py"]
+```
+
+のようなもの。
+
+ただし、パッケージ名やインストール方法は最新仕様に合わせること。
+
+# R2保存
+
+録音完了後はR2へ以下のようなパスで保存したい。
+
+```text
+radio/
+  <station-id>/
+    <program-name>/
+      2026-08-19.m4a
+```
+
+または、
+
+```text
+radio/
+  <program-id>/
+    2026/
+      08/
+        2026-08-19T220000+09:00.m4a
+```
+
+のような、プログラムから扱いやすい構造を提案してほしい。
+
+音声とは別に、
+
+```json
+{
+  "station": "TBS",
+  "title": "...",
+  "started_at": "...",
+  "ended_at": "...",
+  "duration": 3600,
+  "recorded_at": "...",
+  "source": "radiko"
+}
+```
+
+のようなメタデータをD1へ保存する構成も検討する。
+
+# 定期実行
+
+最終的には、
+
+```text
+Cron Trigger
+    ↓
+Workflow
+    ↓
+D1から録音対象を取得
+    ↓
+放送終了済みか確認
+    ↓
+Containerでyt-dlp実行
+    ↓
+R2保存
+    ↓
+D1へ録音結果保存
+```
+
+としたい。
+
+重要なのは、番組開始時刻にContainerを起動して1時間待つのではなく、
+
+```text
+22:00 番組開始
+23:00 番組終了
+23:05 Workflow起動
+23:05〜23:10 タイムフリーを高速取得
+```
+
+のような方式を優先すること。
+
+# エラーハンドリング
+
+以下も考慮してほしい。
+
+- radiko側仕様変更
+- yt-dlp extractorの破損
+- HTTP 403 / 401
+- 地域判定エラー
+- プレイリスト取得失敗
+- 番組未配信
+- タイムフリー対象外番組
+- R2アップロード失敗
+- Containerの途中停止
+
+Workflow側でretry可能な構成が望ましい。
+
+# Secrets
+
+radikoのログイン情報が必要な場合は、コードやD1には保存せずCloudflare Secretsを使用する。
+
+例えば、
+
+```text
+RADIKO_EMAIL
+RADIKO_PASSWORD
+```
+
+など。
+
+Cookie方式の方が適切なら、それもSecretsとして管理する。
+
+# 最終的に欲しいアウトプット
+
+以下を順番に出してほしい。
+
+1. 2026年8月時点のradiko × yt-dlpの最新調査結果
+2. 技術的に実現可能かの結論
+3. 最大のリスク・不確実性
+4. 推奨アーキテクチャ
+5. 最小PoC
+6. Dockerfile
+7. Cloudflare Container実装
+8. R2アップロード
+9. Workflow実装
+10. Cron Trigger設定
+11. D1スキーマ
+12. ディレクトリ構成
+13. ローカル開発・テスト方法
+14. デプロイ手順
+
+可能ならTypeScriptを中心にし、Container内部で必要な部分だけPythonやshellを使用する。
+
+Cloudflare Workers / Workflows / Containers / R2 / D1については、**2026年8月現在の公式Cloudflareドキュメントを確認したうえで実装すること。**
+
+また、radikoや第三者サービスの利用規約に関係する部分は、技術的に可能であることと規約上許可されていることを分けて説明すること。
+
+---
+
+# 目的
+
+Cloudflare環境上で、radikoの特定番組を定期的に自動取得し、音声ファイルとしてR2へ保存する仕組みを作りたい。
+
+Macなどの常時起動端末には依存せず、Cloudflareだけで完結する構成を第一候補とする。
+
+リアルタイムで1時間録音し続ける方式よりも、**放送終了後にradikoのタイムフリー配信を高速取得する方式**を優先して検討してほしい。
+
+# 現時点で考えている構成
+
+```text
+Cloudflare Cron Trigger
+        ↓
+Cloudflare Workflow
+        ↓
+Cloudflare Container
+        ↓
+yt-dlp + radiko対応プラグイン
+        ↓
+ffmpeg / remux
+        ↓
+Cloudflare R2
+```
+
+必要に応じて以下も使ってよい。
+
+```text
+D1
+- programs
+- recording_schedules
+- recordings
+```
+
+将来的にはWorkersで管理画面を作り、
+
+- 番組登録
+- 定期録音予約
+- 録音履歴
+- R2上の音声再生
+- メタデータ管理
+
+までできるようにしたい。
+
+# 調査済みの内容
+
+radikoはHLS形式のストリームを使用している。
+
+タイムフリー配信であれば、放送済みのHLSセグメントを実時間再生せず高速に取得できる可能性が高い。
+
+「ネットラジオ録音 X2.5」も、1時間番組を数分程度で取得できる高速録音機能を提供しており、HLSのセグメントを高速取得・連結している可能性が高い。
+
+2026年1月頃にradikoのタイムフリー配信仕様が変更され、旧来の
+
+```text
+https://radiko.jp/v2/api/ts/playlist.m3u8
+```
+
+ではなく、`smartstream.ne.jp`配下の新しいHLS URLが使われるようになっている。
+
+そのURLには例として、
+
+```text
+station_id
+start_at
+ft
+end_at
+to
+lsid
+type
+```
+
+などのパラメータがある。
+
+ただし、認証Token、`lsid`、地域判定などについてはradiko側の仕様変更が頻繁にあるため、自前実装はできるだけ避けたい。
+
+# yt-dlpについて
+
+可能であれば、radikoの内部認証やm3u8 URL生成を自前実装せず、`yt-dlp`系の既存実装を利用したい。
+
+候補として以下を確認している。
+
+```text
+yt-dlp
+yt-dlp-rajiko
+ffmpeg
+```
+
+`yt-dlp-rajiko`など、現在も動作しているradiko向けyt-dlpプラグインがあるかを必ず最新情報で確認すること。
+
+古いREADMEやIssueだけを根拠にせず、**2026年8月現在の実装・リリース状況・radiko仕様への追従状況**を確認してほしい。
+
+# 最初にやってほしいこと
+
+まずコードを書く前に、以下を調査してほしい。
+
+1. 2026年8月時点で、yt-dlp単体またはプラグインを使ってradikoのタイムフリー番組を取得できるか
+2. 現在メンテナンスされているradiko向けyt-dlpプラグインは何か
+3. radiko無料会員・radikoプレミアム・エリアフリーで挙動がどう違うか
+4. Cookieやログイン情報をyt-dlpに渡す必要があるか
+5. タイムフリー30など現在のradikoプランでも利用できるか
+6. 1時間番組を実時間より高速に取得できるか
+7. ffmpegが必要か
+8. Cloudflare Containerで問題なく実行できるか
+9. Cloudflareのegress IPによるradiko地域判定が問題になるか
+10. Cloudflareだけで解決できない場合、何がボトルネックになるか
+
+必ずGitHubの最新Issue・Release・READMEや公式ドキュメントを確認すること。
+
+# PoC
+
+調査結果として実現可能性が高ければ、最小のPoCを作ってほしい。
+
+最初はCloudflare Workflowなどを入れず、Container内部で以下ができればよい。
+
+```text
+radikoのタイムフリーURL
+        ↓
+yt-dlp
+        ↓
+音声取得
+        ↓
+/tmp/output.m4a
+```
+
+例えばCLIイメージは以下。
+
+```bash
+yt-dlp \
+  "<RADIKO_TIMESHIFT_URL>" \
+  -o "/tmp/output.%(ext)s"
+```
+
+必要なら、
+
+```bash
+--cookies
+--cookies-from-browser
+--username
+--password
+```
+
+などを使う。
+
+ただし、実際に必要なオプションは現在のradiko・yt-dlp実装を確認して決めること。
+
+# Cloudflare Container
+
+PoCが成功したら、Cloudflare Containers用のDockerfileを作る。
+
+イメージとしては、
+
+```dockerfile
+FROM python:3.13-slim
+
+RUN apt-get update \
+    && apt-get install -y ffmpeg \
+    && pip install --no-cache-dir \
+       yt-dlp \
+       yt-dlp-rajiko
+
+WORKDIR /app
+
+COPY . .
+
+CMD ["python", "main.py"]
+```
+
+のようなもの。
+
+ただし、パッケージ名やインストール方法は最新仕様に合わせること。
+
+# R2保存
+
+録音完了後はR2へ以下のようなパスで保存したい。
+
+```text
+radio/
+  <station-id>/
+    <program-name>/
+      2026-08-19.m4a
+```
+
+または、
+
+```text
+radio/
+  <program-id>/
+    2026/
+      08/
+        2026-08-19T220000+09:00.m4a
+```
+
+のような、プログラムから扱いやすい構造を提案してほしい。
+
+音声とは別に、
+
+```json
+{
+  "station": "TBS",
+  "title": "...",
+  "started_at": "...",
+  "ended_at": "...",
+  "duration": 3600,
+  "recorded_at": "...",
+  "source": "radiko"
+}
+```
+
+のようなメタデータをD1へ保存する構成も検討する。
+
+# 定期実行
+
+最終的には、
+
+```text
+Cron Trigger
+    ↓
+Workflow
+    ↓
+D1から録音対象を取得
+    ↓
+放送終了済みか確認
+    ↓
+Containerでyt-dlp実行
+    ↓
+R2保存
+    ↓
+D1へ録音結果保存
+```
+
+としたい。
+
+重要なのは、番組開始時刻にContainerを起動して1時間待つのではなく、
+
+```text
+22:00 番組開始
+23:00 番組終了
+23:05 Workflow起動
+23:05〜23:10 タイムフリーを高速取得
+```
+
+のような方式を優先すること。
+
+# エラーハンドリング
+
+以下も考慮してほしい。
+
+- radiko側仕様変更
+- yt-dlp extractorの破損
+- HTTP 403 / 401
+- 地域判定エラー
+- プレイリスト取得失敗
+- 番組未配信
+- タイムフリー対象外番組
+- R2アップロード失敗
+- Containerの途中停止
+
+Workflow側でretry可能な構成が望ましい。
+
+# Secrets
+
+radikoのログイン情報が必要な場合は、コードやD1には保存せずCloudflare Secretsを使用する。
+
+例えば、
+
+```text
+RADIKO_EMAIL
+RADIKO_PASSWORD
+```
+
+など。
+
+Cookie方式の方が適切なら、それもSecretsとして管理する。
+
+# 最終的に欲しいアウトプット
+
+以下を順番に出してほしい。
+
+1. 2026年8月時点のradiko × yt-dlpの最新調査結果
+2. 技術的に実現可能かの結論
+3. 最大のリスク・不確実性
+4. 推奨アーキテクチャ
+5. 最小PoC
+6. Dockerfile
+7. Cloudflare Container実装
+8. R2アップロード
+9. Workflow実装
+10. Cron Trigger設定
+11. D1スキーマ
+12. ディレクトリ構成
+13. ローカル開発・テスト方法
+14. デプロイ手順
+
+可能ならTypeScriptを中心にし、Container内部で必要な部分だけPythonやshellを使用する。
+
+Cloudflare Workers / Workflows / Containers / R2 / D1については、**2026年8月現在の公式Cloudflareドキュメントを確認したうえで実装すること。**
+
+また、radikoや第三者サービスの利用規約に関係する部分は、技術的に可能であることと規約上許可されていることを分けて説明すること。
+
+---
+
+Start multitasking
+
+---
+
+https://427738.xyz/yt-dlp-rajiko/index.ja.html
+
+---
+
+いったんドキュメントにおこして
+
+---
+
+一旦PR作って。
+
+---
+
+ContainerとSandboxどっちがいい？
